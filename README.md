@@ -18,7 +18,7 @@ Components
 
 * gingerweb - a Web application and REST API
 * ??? - query for and queue work
-* ??? - checks the web for the resource
+* gingerfetch - checks the web for the resource
 * ??? - persists resource metadata
 * ??? - checks web archives for resource
 * ??? - example importer for checking external links in Wikipedia 
