@@ -1,100 +1,149 @@
 package ginger
 
 import (
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
-	"net/url"
+	"sync"
+	"time"
+
+	"github.com/eikeon/ginger/db"
+	"github.com/eikeon/ginger/queue"
 )
 
-type FetchRequest struct {
-	URL *url.URL
+var DB db.DB
+
+type Fetch struct {
+	URL         string
+	RequestedOn string
+	Response    *FetchResponse
 }
 
-func (req *FetchRequest) Fetch() *FetchResponse {
-	response, err := http.Get(req.URL.String())
-	if err != nil {
-		log.Fatal(err)
-	}
-	return &FetchResponse{response}
+func (req *Fetch) Put() error {
+	return DB.Put("fetch", *req)
+}
+
+func (req *Fetch) Update() error {
+	return req.Put()
 }
 
 type FetchResponse struct {
-	Response *http.Response
-}
-
-type Queue struct {
-	messages chan string
-}
-
-func (q *Queue) SendMessage(message interface{}) error {
-	b, err := json.Marshal(message)
-	if err != nil {
-		log.Fatal(err)
-	}
-	q.messages <- string(b)
-	return nil
-}
-
-func (q *Queue) ReceiveMessage(i interface{}) error {
-	message := <-q.messages
-	if message == "" {
-		return errors.New("empty")
-	}
-	if err := json.Unmarshal([]byte(message), &i); err != nil {
-		//log.Fatal(err) TODO: a FetchResponse we can round trip
-		log.Println("ERROR:", err)
-	}
-	return nil
-}
-
-type Result struct {
 	StatusCode    int
 	ContentLength int64
 }
-type Results map[string]Result
+
+type Collection struct {
+	Name        string
+	RequestedBy string
+}
+
+func (c *Collection) Add(URL string, requestedBy string) error {
+	t := time.Now()
+	// TODO: requestedBy
+	f := &Fetch{URL, t.Format(time.RFC3339Nano), nil}
+	f.Put()
+	return nil
+}
+
+func (c *Collection) Put() error {
+	return DB.Put("collection", *c)
+}
+
+func (c *Collection) Fetches() (fetch []Fetch) {
+	items, err := DB.Scan("fetch")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, i := range items {
+		fetch = append(fetch, i.(Fetch))
+	}
+	return
+}
 
 type Ginger struct {
-	requests  Queue
-	responses Queue
-	Results   Results
+	cond *sync.Cond // a rendezvous point for goroutines waiting for or announcing state changed
 }
 
-func NewGinger() *Ginger {
-	return &Ginger{Queue{make(chan string, 100)}, Queue{make(chan string, 100)}, make(Results)}
+func NewMemoryGinger() *Ginger {
+	DB = &db.MemoryDB{}
+	DB.CreateTable("fetch", []db.AttributeDefinition{}, db.KeySchema{})
+	DB.CreateTable("collection", []db.AttributeDefinition{}, db.KeySchema{})
+	return &Ginger{}
 }
 
-func (g *Ginger) Greeting() string {
-	return "Hello, world!"
+func (g *Ginger) Collections() (collection []Collection) {
+	items, err := DB.Scan("collection")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, i := range items {
+		collection = append(collection, i.(Collection))
+	}
+	return
 }
 
-func (g *Ginger) Add(url *url.URL) {
-	fr := FetchRequest{url}
-	g.requests.SendMessage(fr)
+func (g *Ginger) AddCollection(name string, requestedBy string) (*Collection, error) {
+	c := &Collection{name, requestedBy}
+	if err := c.Put(); err != nil {
+		return nil, err
+	}
+	g.StateChanged()
+	return c, nil
 }
 
-func (g *Ginger) Fetcher() {
+func (g *Ginger) GetCollection(name string) (*Collection, error) {
+	for _, c := range g.Collections() {
+		if c.Name == name {
+			return &c, nil
+		}
+	}
+	return nil, errors.New("Collection not found")
+}
+
+func (m *Ginger) getStateCond() *sync.Cond {
+	if m.cond == nil {
+		m.cond = sync.NewCond(&sync.Mutex{})
+	}
+	return m.cond
+}
+
+func (m *Ginger) StateChanged() {
+	c := m.getStateCond()
+	c.L.Lock()
+	c.Broadcast()
+	c.L.Unlock()
+}
+
+func (m *Ginger) WaitStateChanged() {
+	c := m.getStateCond()
+	c.L.Lock()
+	c.Wait()
+	c.L.Unlock()
+}
+
+func Qer(requests queue.Queue) {
+	items, err := DB.Scan("fetch")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, i := range items {
+		requests.Send(i)
+	}
+}
+
+func Worker(requests queue.Queue) {
 	for {
-		var request FetchRequest
-		err := g.requests.ReceiveMessage(&request)
+		var fetch Fetch
+		err := requests.Receive(&fetch)
 		if err != nil {
 			log.Println("Done fetching")
 			break
 		}
-		response := request.Fetch()
-		g.responses.SendMessage(response)
-	}
-}
-
-func (g *Ginger) Persister() {
-	for {
-		var response FetchResponse
-		err := g.responses.ReceiveMessage(&response)
+		r, err := http.Get(fetch.URL)
 		if err != nil {
-			log.Println("done persisting")
-			break
+			log.Fatal(err)
 		}
-		g.Results[response.Response.Request.URL.String()] = Result{response.Response.StatusCode, response.Response.ContentLength}
+		fetch.Response = &FetchResponse{r.StatusCode, r.ContentLength}
+		fetch.Update()
 	}
 }

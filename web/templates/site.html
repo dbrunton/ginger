@@ -1,6 +1,9 @@
 {{define "html"}}<!DOCTYPE html>
-<html>
+<html lang="en" ng-app="GingerApp">
   <head>
+    <script src="/js/angular.min.js"></script>
+    <script src="/js/ui-bootstrap-tpls.min.js"></script>
+    <script src="/js/ginger.js"></script>
     <title>{{if .Found}}{{with .Title}}{{.}} « {{end}}Ginger{{else}}Not Found{{end}}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="/bootstrap/css/bootstrap.min.css" rel="stylesheet">
@@ -22,6 +25,7 @@
           <div class="nav-collapse collapse">
             <ul class="nav">
               <li><a href="/">Home</a></li>
+              <li><a href="/collection/">Collections</a></li>
             </ul>
           </div>
         </div>

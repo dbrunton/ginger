@@ -1,35 +1,42 @@
 package ginger_test
 
 import (
-	//"net/http"
-	"net/url"
 	"testing"
 	"time"
 
 	"github.com/bmizerany/assert"
 	"github.com/eikeon/ginger"
+	"github.com/eikeon/ginger/queue"
 )
 
-func TestFetch(t *testing.T) {
-	u, err := url.Parse("http://www.eikeon.com/")
-	if err != nil {
-		t.Error(err)
-	}
-	req := &ginger.FetchRequest{u}
-	response := req.Fetch()
-	assert.Equal(t, response.Response.StatusCode, 200)
-}
-
 func TestGinger(t *testing.T) {
-	g := ginger.NewGinger()
-	go g.Fetcher()
-	go g.Persister()
-	u, err := url.Parse("http://www.eikeon.com/")
+	requests := queue.NewChannelQueue(nil)
+	g := ginger.NewMemoryGinger()
+	c, err := g.AddCollection("testCollection", "me")
+	assert.Equal(t, err, nil)
+	err = c.Add("http://www.eikeon.com/", "me")
+
 	if err != nil {
-		t.Error(err)
+		t.Error("unable to fetch http://eikeon.com/")
 	}
-	g.Add(u)
+
+	ginger.Qer(requests)
+
+	go ginger.Worker(requests)
+
 	time.Sleep(1 * time.Second)
-	_, ok := g.Results["http://www.eikeon.com/"]
-	assert.Equal(t, ok, true)
+	if responses, err := ginger.DB.Scan("fetch"); err == nil {
+		for _, r := range responses {
+			f := r.(ginger.Fetch)
+			if f.URL == "http://www.eikeon.com/" {
+				if f.Response != nil && f.Response.StatusCode != 0 {
+					goto found
+				}
+			}
+		}
+	} else {
+		t.Log(err)
+	}
+	t.Error("Didn't find expected result")
+found:
 }
